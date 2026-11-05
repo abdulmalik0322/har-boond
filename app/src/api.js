@@ -55,3 +55,36 @@ export function acceptBloodRequest(reqId, payload) {
 export function confirmBloodRequest(reqId, code) {
   return post(`/api/requests/${reqId}/confirm`, { code }) // -> { reqId, status }
 }
+
+/* ================= Admin =================
+   Admin key sirf is browser ki session me rehti hai (sessionStorage) —
+   page band karne par khud saaf. Baghair sahi key ke server data nahi deta. */
+const adminKey = () => sessionStorage.getItem('hb_admin_key') || ''
+export function setAdminKey(k) {
+  if (k) sessionStorage.setItem('hb_admin_key', k)
+  else sessionStorage.removeItem('hb_admin_key')
+}
+export function hasAdminKey() { return !!adminKey() }
+
+async function adminCall(path, opts = {}) {
+  const res = await fetch(`${API}${path}`, {
+    headers: { 'Content-Type': 'application/json', 'x-admin-key': adminKey() },
+    ...opts,
+  })
+  let body = null
+  try { body = await res.json() } catch { /* empty body */ }
+  if (!res.ok) throw new Error((body && body.error) || `Server error (${res.status})`)
+  return body
+}
+
+export const adminOverview = () => adminCall('/api/admin/overview')
+export const adminDonors = () => adminCall('/api/admin/donors')
+export const adminRequests = () => adminCall('/api/admin/requests')
+export const adminPatchDonor = (id, patch) =>
+  adminCall(`/api/admin/donors/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+export const adminDeleteDonor = (id) =>
+  adminCall(`/api/admin/donors/${id}`, { method: 'DELETE' })
+export const adminPatchRequest = (id, patch) =>
+  adminCall(`/api/admin/requests/${id}`, { method: 'PATCH', body: JSON.stringify(patch) })
+export const adminDeleteRequest = (id) =>
+  adminCall(`/api/admin/requests/${id}`, { method: 'DELETE' })

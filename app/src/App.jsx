@@ -4,6 +4,8 @@ import { loadDevice, saveDevice, timeAgoFrom } from './store'
 import {
   fetchCounts, fetchRequests, registerDonor, createBloodRequest,
   acceptBloodRequest, confirmBloodRequest,
+  setAdminKey, hasAdminKey, adminOverview, adminDonors, adminRequests,
+  adminPatchDonor, adminDeleteDonor, adminPatchRequest, adminDeleteRequest,
 } from './api'
 import heroImg from './assets/img/hero.webp'
 import nurseImg from './assets/img/nurse.webp'
@@ -727,9 +729,145 @@ function RequestsPage({ requests, myDonor, acceptRequest, confirmRequest }) {
   )
 }
 
+/* ================= Admin ================= */
+const REQ_STATUS = {
+  searching: { label: 'Dhoondh raha hai', cls: 'adm-pill-wait' },
+  'donor-found': { label: 'Donor mil gaya', cls: 'adm-pill-mid' },
+  completed: { label: 'Mukammal', cls: 'adm-pill-done' },
+}
+
+function AdminPage() {
+  const [authed, setAuthed] = useState(false)
+  const [keyInput, setKeyInput] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [overview, setOverview] = useState(null)
+  const [donors, setDonors] = useState([])
+  const [reqs, setReqs] = useState([])
+
+  const load = async () => {
+    const [ov, dn, rq] = await Promise.all([adminOverview(), adminDonors(), adminRequests()])
+    setOverview(ov); setDonors(dn); setReqs(rq); setAuthed(true)
+  }
+
+  useEffect(() => {
+    if (hasAdminKey()) load().catch(() => { setAdminKey(''); setAuthed(false) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const login = async (e) => {
+    e.preventDefault()
+    setErr(''); setBusy(true)
+    setAdminKey(keyInput.trim())
+    try { await load() }
+    catch { setAdminKey(''); setAuthed(false); setErr('Key ghalat hai — dobara try karo') }
+    setBusy(false)
+  }
+
+  const logout = () => { setAdminKey(''); setAuthed(false); setOverview(null); setDonors([]); setReqs([]) }
+
+  const act = async (fn) => {
+    setBusy(true); setErr('')
+    try { await fn(); await load() }
+    catch (e2) { setErr(e2.message || 'Kuch ghalat ho gaya') }
+    setBusy(false)
+  }
+
+  if (!authed) {
+    return (
+      <section className="section" style={{ maxWidth: 560 }}>
+        <span className="kicker">ADMIN</span>
+        <h2 className="sec-title">Admin <span>Panel</span></h2>
+        <p className="sec-sub">Ye page sirf Har Boond ke admin ke liye hai. Apni admin key likho — baghair sahi key ke server koi data nahi deta.</p>
+        <form className="form-card" onSubmit={login} style={{ marginTop: 26 }}>
+          <label className="lbl2">Admin Key</label>
+          <input className="input" type="password" value={keyInput} onChange={(e) => setKeyInput(e.target.value)} placeholder="Admin key yahan likho" autoComplete="current-password" />
+          {err && <p className="err">{err}</p>}
+          <button className="btn btn-red btn-full" type="submit" disabled={busy || !keyInput.trim()} style={{ marginTop: 16 }}>
+            {busy ? 'Check ho raha hai…' : 'Panel Kholo'}
+          </button>
+          <p className="form-note">Key is browser me sirf is session ke liye rehti hai — tab band karne par khud khatam ho jati hai.</p>
+        </form>
+      </section>
+    )
+  }
+
+  const ov = overview || { donors: {}, requests: {} }
+  return (
+    <section className="section">
+      <span className="kicker">ADMIN</span>
+      <h2 className="sec-title">Admin <span>Panel</span></h2>
+      <p className="sec-sub">Saare donors, requests aur numbers — sab kuch aik jagah. Fake ya paisay mangne wale donor ko ban kar do, phansi hui request ko azad kar do.</p>
+      {err && <p className="err" style={{ marginTop: 14 }}>{err}</p>}
+
+      <div className="adm-stats">
+        <div className="adm-stat"><b>{ov.donors.total ?? 0}</b><span>Total Donors</span></div>
+        <div className="adm-stat"><b>{ov.donors.ready ?? 0}</b><span>Ready Donors</span></div>
+        <div className="adm-stat"><b>{ov.requests.completed ?? 0}</b><span>Mukammal Donations</span></div>
+        <div className="adm-stat"><b>{ov.requests.searching ?? 0}</b><span>Chalti Requests</span></div>
+        <div className="adm-stat"><b>{ov.donors.hangu ?? 0}</b><span>Hangu Donors</span></div>
+        <div className="adm-stat"><b>{ov.donors.kohat ?? 0}</b><span>Kohat Donors</span></div>
+      </div>
+
+      <h3 className="adm-h">Donors ({donors.length})</h3>
+      <div className="adm-tablewrap">
+        <table className="adm-table">
+          <thead><tr><th>Naam</th><th>Number</th><th>Group</th><th>Sheher</th><th>Status</th><th>Donations</th><th>Actions</th></tr></thead>
+          <tbody>
+            {donors.map((d) => (
+              <tr key={d._id} className={d.banned ? 'adm-banned' : ''}>
+                <td>{d.name}{d.verified ? ' ✓' : ''}</td>
+                <td>{d.phone}</td>
+                <td><b>{d.group}</b></td>
+                <td>{d.city}</td>
+                <td>{d.banned ? <span className="adm-pill adm-pill-bad">Banned</span> : d.ready ? <span className="adm-pill adm-pill-done">Ready</span> : <span className="adm-pill adm-pill-wait">Wait (90 din)</span>}</td>
+                <td>{d.donations || 0}</td>
+                <td className="adm-actions">
+                  <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchDonor(d._id, { verified: !d.verified }))}>{d.verified ? 'Unverify' : 'Verify'}</button>
+                  <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchDonor(d._id, { banned: !d.banned }))}>{d.banned ? 'Unban' : 'Ban'}</button>
+                  <button className="adm-btn adm-btn-danger" disabled={busy} onClick={() => { if (window.confirm(`${d.name} ka record hamesha ke liye delete kar dun?`)) act(() => adminDeleteDonor(d._id)) }}>Delete</button>
+                </td>
+              </tr>
+            ))}
+            {!donors.length && <tr><td colSpan="7" className="adm-empty">Abhi koi donor register nahi hua.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 className="adm-h">Requests ({reqs.length})</h3>
+      <div className="adm-tablewrap">
+        <table className="adm-table">
+          <thead><tr><th>ID</th><th>Rabta Karne Wala</th><th>Group</th><th>Sheher / Hospital</th><th>Status</th><th>Donor</th><th>Actions</th></tr></thead>
+          <tbody>
+            {reqs.map((r) => (
+              <tr key={r._id}>
+                <td><b>{r.reqId}</b></td>
+                <td>{r.attendant}<br /><span className="adm-dim">{r.phone}</span></td>
+                <td><b>{r.group}</b> · {r.bottles} bottle</td>
+                <td>{r.city}<br /><span className="adm-dim">{r.hospital}</span></td>
+                <td><span className={`adm-pill ${REQ_STATUS[r.status]?.cls || ''}`}>{REQ_STATUS[r.status]?.label || r.status}</span></td>
+                <td>{r.donorName ? <>{r.donorName}<br /><span className="adm-dim">{r.donorPhone}</span></> : <span className="adm-dim">—</span>}</td>
+                <td className="adm-actions">
+                  {r.status !== 'searching' && <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchRequest(r._id, { status: 'searching' }))}>Azad Karo</button>}
+                  {r.status !== 'completed' && <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchRequest(r._id, { status: 'completed' }))}>Complete</button>}
+                  <button className="adm-btn adm-btn-danger" disabled={busy} onClick={() => { if (window.confirm(`${r.reqId} request hamesha ke liye delete kar dun?`)) act(() => adminDeleteRequest(r._id)) }}>Delete</button>
+                </td>
+              </tr>
+            ))}
+            {!reqs.length && <tr><td colSpan="7" className="adm-empty">Abhi koi request nahi ai.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <button className="btn btn-line" onClick={logout} style={{ marginTop: 28 }}>Admin Logout</button>
+    </section>
+  )
+}
+
 /* ================= APP ================= */
 function parseRoute() {
   const h = window.location.hash || '#/'
+  if (h.startsWith('#/admin')) return 'admin'
   if (h.startsWith('#/register')) return 'register'
   if (h.startsWith('#/requests')) return 'requests'
   if (h.startsWith('#/request')) return 'request'
@@ -864,11 +1002,13 @@ export default function App() {
       {route === 'requests' && (
         <RequestsPage requests={displayRequests} myDonor={device.myDonors[0] || null} acceptRequest={acceptRequest} confirmRequest={confirmRequest} />
       )}
+      {route === 'admin' && <AdminPage />}
 
       <footer className="footer">
         <div className="brand"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M12 2.7c3.2 4.1 6.5 8.3 6.5 12a6.5 6.5 0 1 1-13 0c0-3.7 3.3-7.9 6.5-12z" fill="#FF2E4D" /></svg><span>HAR <b>BOOND</b></span></div>
         <p>Har Boond sirf donor tak pohanchata hai. Donor theek hai ya nahi, is ka aakhri test hospital / blood bank hi karega.</p>
         <p className="foot-small">Photos: Pexels free photographers — FRANK MERIÑO, Kirill Dratsevich, Charlie-Helen Robinson • Hangu + Kohat, Khyber Pakhtunkhwa, Pakistan</p>
+        <p className="foot-small"><a href="#/admin" onClick={(e) => { e.preventDefault(); go('admin') }} style={{ textDecoration: 'underline', textUnderlineOffset: 3 }}>Admin Panel</a></p>
       </footer>
     </div>
   )

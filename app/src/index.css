@@ -284,3 +284,29 @@ select.input option{background:#180A10}
   .code-row{flex-direction:column}
   .code-input{max-width:none}
 }
+
+/* ---------- Admin panel ---------- */
+.adm-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:30px 0 8px}
+.adm-stat{background:linear-gradient(165deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:18px;padding:20px 16px;text-align:center}
+.adm-stat b{display:block;font-size:32px;font-weight:900;letter-spacing:-.5px;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+.adm-stat span{font-size:11.5px;color:var(--muted);letter-spacing:1.4px;text-transform:uppercase;font-weight:700}
+.adm-h{font-size:21px;font-weight:800;margin:38px 0 14px}
+.adm-tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:18px;background:linear-gradient(165deg,var(--panel2),var(--panel))}
+.adm-table{width:100%;border-collapse:collapse;min-width:760px;font-size:14.5px}
+.adm-table th{text-align:left;padding:13px 14px;color:var(--muted);font-size:11.5px;letter-spacing:1.6px;text-transform:uppercase;border-bottom:1px solid var(--line);white-space:nowrap}
+.adm-table td{padding:12px 14px;border-bottom:1px solid rgba(255,90,110,.07);vertical-align:top}
+.adm-table tr:last-child td{border-bottom:none}
+.adm-banned{opacity:.45}
+.adm-dim{color:var(--muted);font-size:13px}
+.adm-empty{text-align:center;color:var(--muted);padding:26px 14px}
+.adm-pill{display:inline-block;padding:4px 11px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
+.adm-pill-done{background:rgba(61,220,132,.14);color:var(--green);border:1px solid rgba(61,220,132,.35)}
+.adm-pill-wait{background:rgba(255,180,84,.12);color:var(--amber);border:1px solid rgba(255,180,84,.35)}
+.adm-pill-mid{background:rgba(255,46,77,.12);color:#FFB3BE;border:1px solid rgba(255,46,77,.4)}
+.adm-pill-bad{background:rgba(232,17,45,.18);color:#FF8095;border:1px solid rgba(232,17,45,.5)}
+.adm-actions{white-space:nowrap}
+.adm-btn{background:transparent;border:1.5px solid rgba(255,255,255,.28);color:#fff;border-radius:999px;padding:6px 13px;font-size:12.5px;font-weight:700;margin-right:6px;transition:.2s}
+.adm-btn:hover{border-color:var(--red2);color:var(--red2)}
+.adm-btn:disabled{opacity:.5;cursor:wait}
+.adm-btn-danger{border-color:rgba(232,17,45,.55);color:#FF8095}
+.adm-btn-danger:hover{background:rgba(232,17,45,.15);color:#FF8095}
