@@ -1,37 +1,89 @@
 import { Router } from 'express'
+import mongoose from 'mongoose'
 import Donor from '../models/Donor.js'
 import { donorReady } from '../lib/ready.js'
+import { validateDonorPayload, GROUPS } from '../validators/validate.js'
+import { genToken, hashToken, secureEqual } from '../lib/tokens.js'
+import { rateLimit, asyncHandler } from '../middleware/security.js'
 
 const router = Router()
-const phoneOk = (p) => /^03\d{9}$/.test((p || '').replace(/[\s-]/g, ''))
 
-// POST /api/donors — naya donor register
-router.post('/', async (req, res) => {
+// POST /api/donors — naya donor register (strict validation + duplicate protection)
+router.post('/', rateLimit({ windowMs: 60 * 60 * 1000, max: 10 }), asyncHandler(async (req, res) => {
+  const { error, field, value } = validateDonorPayload(req.body || {})
+  if (error) return res.status(400).json({ error, field })
+
+  const existing = await Donor.findOne({ phone: value.phone }).select('_id').lean()
+  if (existing) return res.status(409).json({ error: 'Ye number pehle se register hai', field: 'phone' })
+
+  const donorToken = genToken()
+  let donor
   try {
-    const { name, phone, group, city, lastDonation, nightAvailable } = req.body || {}
-    if (!name || name.trim().length < 3) return res.status(400).json({ error: 'Poora naam zaroori hai' })
-    if (!phoneOk(phone)) return res.status(400).json({ error: 'Sahi WhatsApp number zaroori hai (03 se shuru, 11 number)' })
-    const donor = await Donor.create({
-      name: name.trim(), phone: phone.replace(/[\s-]/g, ''),
-      group, city, lastDonation: lastDonation || null,
-      nightAvailable: nightAvailable !== false,
-    })
-    res.status(201).json({ id: donor._id, ready: donorReady(donor) })
+    donor = await Donor.create({ ...value, authTokenHash: hashToken(donorToken) })
   } catch (e) {
-    res.status(400).json({ error: e.message })
+    if (e.code === 11000) return res.status(409).json({ error: 'Ye number pehle se register hai', field: 'phone' })
+    throw e
   }
-})
+  // donorToken sirf is response me ek dafa milta hai — DB me sirf hash hai.
+  return res.status(201).json({ id: donor._id, ready: donorReady(donor), verified: false, donorToken })
+}))
 
-// GET /api/donors/counts?city=Hangu — board ke liye sirf numbers (kisi ka number/name nahi jata)
-router.get('/counts', async (req, res) => {
-  const { city } = req.query
-  const donors = await Donor.find({ banned: false, ...(city ? { city } : {}) }).lean()
-  const out = {}
-  for (const g of ['A+','A-','B+','B-','AB+','AB-','O+','O-']) {
-    const inGroup = donors.filter((d) => d.group === g)
-    out[g] = { registered: inGroup.length, ready: inGroup.filter((d) => donorReady(d)).length }
+// POST /api/donors/opt-out — notification razamandi wapas lena (token lazmi)
+router.post('/opt-out', rateLimit({ windowMs: 15 * 60 * 1000, max: 30 }), asyncHandler(async (req, res) => {
+  const { donorId, donorToken } = req.body || {}
+  if (!donorId || !mongoose.Types.ObjectId.isValid(String(donorId))) {
+    return res.status(401).json({ error: 'Donor pehchan nahi ho saki' })
   }
-  res.json({ city: city || 'all', groups: out, total: donors.length, readyTotal: donors.filter((d) => donorReady(d)).length })
-})
+  const donor = await Donor.findById(donorId)
+  if (!donor || !donor.authTokenHash || !secureEqual(hashToken(donorToken || ''), donor.authTokenHash)) {
+    return res.status(401).json({ error: 'Donor pehchan nahi ho saki' })
+  }
+  donor.notifyConsent = false
+  await donor.save()
+  return res.json({ ok: true })
+}))
+
+// GET /api/donors/counts?city=Hangu — board ke numbers, MongoDB aggregation se.
+// Kisi ka naam/number is response me kabhi nahi jata.
+router.get('/counts', asyncHandler(async (req, res) => {
+  const { city } = req.query
+  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000)
+  const match = { banned: false }
+  if (city) match.city = city
+  const rows = await Donor.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: '$group',
+        registered: { $sum: 1 },
+        ready: {
+          $sum: {
+            $cond: [
+              { $or: [{ $eq: ['$lastDonation', null] }, { $lte: ['$lastDonation', cutoff] }] },
+              1,
+              0,
+            ],
+          },
+        },
+      },
+    },
+  ])
+  const groups = {}
+  let total = 0
+  let readyTotal = 0
+  for (const g of GROUPS) groups[g] = { registered: 0, ready: 0 }
+  for (const row of rows) {
+    if (groups[row._id]) groups[row._id] = { registered: row.registered, ready: row.ready }
+    total += row.registered
+    readyTotal += row.ready
+  }
+  return res.json({
+    city: city || 'all',
+    groups,
+    total,
+    readyTotal,
+    generatedAt: new Date().toISOString(),
+  })
+}))
 
 export default router

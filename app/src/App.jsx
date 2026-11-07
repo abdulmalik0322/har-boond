@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { GROUPS, CITIES } from './data'
-import { loadDevice, saveDevice, timeAgoFrom } from './store'
+import { GROUPS, CITIES, canDonateTo } from './data'
+import { loadDevice, saveDevice, timeAgoFrom, timeLeftFrom, donorIsReady } from './store'
 import {
   fetchCounts, fetchRequests, registerDonor, createBloodRequest,
   acceptBloodRequest, confirmBloodRequest,
   setAdminKey, hasAdminKey, adminOverview, adminDonors, adminRequests,
   adminPatchDonor, adminDeleteDonor, adminPatchRequest, adminDeleteRequest,
+  adminAudit, adminReissueToken,
 } from './api'
 import heroImg from './assets/img/hero.webp'
 import nurseImg from './assets/img/nurse.webp'
@@ -72,6 +73,7 @@ function Cells() {
     }
     resize()
     window.addEventListener('resize', resize)
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const tick = () => {
       ctx.clearRect(0, 0, w, h)
       for (const c of cells) {
@@ -86,6 +88,8 @@ function Cells() {
         ctx.beginPath(); ctx.arc(x, y, c.r * 0.55, 0, Math.PI * 2)
         ctx.fillStyle = `rgba(90,4,18,${c.a * 0.8})`; ctx.fill()
       }
+      if (reduced) return // reduced motion: sirf aik static frame
+      if (document.hidden) { setTimeout(tick, 600); return } // tab chhupa ho to animation roko
       raf = requestAnimationFrame(tick)
     }
     tick()
@@ -105,6 +109,7 @@ function CountUp({ value }) {
     const ob = new IntersectionObserver(([e]) => {
       if (e.isIntersecting && !started.current) {
         started.current = true
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { setN(value); return }
         const t0 = Date.now()
         const iv = setInterval(() => {
           const p = Math.min(1, (Date.now() - t0) / 1000)
@@ -158,7 +163,7 @@ function LifelineBoard({ counts, group, setGroup, city }) {
           const on = group === g
           const ready = counts?.[city]?.groups?.[g]?.ready ?? 0
           return (
-            <g key={g} className={`node ${on ? 'node-on' : ''}`} onClick={() => setGroup(g)} style={{ animationDelay: `${i * 0.35}s` }}>
+            <g key={g} className={`node ${on ? 'node-on' : ''}`} onClick={() => setGroup(g)} style={{ animationDelay: `${i * 0.35}s` }} tabIndex={0} role="button" aria-label={`${g} blood group — ${ready} ready donors`} aria-pressed={on} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setGroup(g) } }}>
               <circle cx={x} cy={y} r={on ? 27 : 22} className="node-c" />
               <text x={x} y={y - 1} className="node-g">{g}</text>
               <text x={x} y={y + 12} className="node-n">{ready} ready</text>
@@ -179,6 +184,7 @@ const STATUS = {
   'searching': { label: 'Donor Dhunda Ja Raha Hai', cls: 'st-search' },
   'donor-found': { label: 'Donor Mil Gaya', cls: 'st-found' },
   'completed': { label: 'Khoon Mil Gaya', cls: 'st-done' },
+  'expired': { label: 'Waqt Khatam Ho Gaya', cls: 'st-exp' },
 }
 
 /* ================= Request card (home + requests page) ================= */
@@ -192,6 +198,9 @@ function RequestCard({ r }) {
       <h3>{r.hospital}</h3>
       <p>{r.city} • {r.bottles} bottle chahiye • {r.deadlineHrs} ghante ke andar</p>
       {r.status === 'donor-found' && r.donorName && <p className="req-donor">Donor: <b>{r.donorName}</b> araha hai</p>}
+      {(r.status === 'searching' || r.status === 'donor-found') && (
+        <p className="req-expiry">⏳ {timeLeftFrom(r.expiresAt || (r.postedAt + r.deadlineHrs * 3600000))}</p>
+      )}
       <div className="req-foot"><span>{timeAgoFrom(r.postedAt)}</span><span className="req-id">{r.id}</span></div>
       <div className="req-line" />
     </article>
@@ -199,7 +208,7 @@ function RequestCard({ r }) {
 }
 
 /* ================= HOME ================= */
-function Home({ counts, requests, goRegister, goRequest, goRequests }) {
+function Home({ counts, countsLoading, lastUpdated, requests, goRegister, goRequest, goRequests }) {
   const [group, setGroup] = useState('O+')
   const [city, setCity] = useState('Hangu')
   const [reqCity, setReqCity] = useState('All')
@@ -225,18 +234,16 @@ function Home({ counts, requests, goRegister, goRequest, goRequests }) {
           <span className="badge">HANGU + KOHAT — JAHAN SE SHURUAAT HOGI</span>
           <h1 className="mega">AIK <span className="fill">BOOND.</span><br />AIK <span className="stroke">ZINDAGI.</span></h1>
           <p className="hero-sub">
-            Jab hospital me doctor kehta hai <em>"khoon lao, waqt kam hai"</em> — us waqt Facebook
-            groups kaam nahi karte. Har Boond usi sheher ke <b>ready donors</b> ko minutes me
-            tumhare samne le ata hai. Na sifarish, na intezar, na paisa.
+            {'Jab hospital me doctor kehta hai '}<em>"khoon lao, waqt kam hai"</em>{' — us waqt Facebook groups kaam nahi karte. Har Boond usi sheher ke '}<b>ready donors</b>{' ko minutes me tumhare samne le ata hai. Na sifarish, na intezar, na paisa.'}
           </p>
           <div className="hero-ctas">
             <a className="btn btn-red btn-lg" href="#board" onClick={goBoard}>Lifeline Board Kholo</a>
             <button className="btn btn-line btn-lg" onClick={goRequests}>Live Requests Dekho</button>
           </div>
           <div className="hero-stats">
-            <div><b><CountUp value={st.total} /></b><span>Register Donors</span></div>
+            <div><b>{counts ? <CountUp value={st.total} /> : '—'}</b><span>Register Donors</span></div>
             <div className="hs-sep" />
-            <div><b><CountUp value={st.ready} /></b><span>Abhi Is Waqt Ready</span></div>
+            <div><b>{counts ? <CountUp value={st.ready} /> : '—'}</b><span>Abhi Is Waqt Ready</span></div>
             <div className="hs-sep" />
             <div><b>Rs 0</b><span>Hamesha — Khoon Muft</span></div>
           </div>
@@ -256,24 +263,35 @@ function Home({ counts, requests, goRegister, goRequest, goRequests }) {
           <Reveal>
             <div className="city-switch">
               {CITIES.map((c) => (
-                <button key={c} className={`cs-btn ${city === c ? 'cs-on' : ''}`} onClick={() => setCity(c)}>{c}</button>
+                <button key={c} className={`cs-btn ${city === c ? 'cs-on' : ''}`} onClick={() => setCity(c)} aria-pressed={city === c}>{c}</button>
               ))}
             </div>
             <LifelineBoard counts={counts} group={group} setGroup={setGroup} city={city} />
           </Reveal>
           <Reveal delay={140}>
-            <div className="detail" key={`${city}-${group}-${ready}`}>
-              <span className="detail-group">{group}</span>
-              <div className="detail-num"><CountUp value={ready} /></div>
-              <p className="detail-line"><b>{city}</b> me is group ke donors <b>abhi ready</b> hain</p>
-              <div className="ready-bar"><i style={{ width: `${registered ? Math.round((ready / registered) * 100) : 0}%` }} /></div>
-              <p className="detail-small">{registered} register donors me se {ready} ne 3 mahine wala rule poora kiya. Baqi ko system tang nahi karta — unki sehat pehle hai.</p>
-              <button className="btn btn-red btn-full" onClick={() => goRequest(group, city)}>Request Bhejo — Inhi {ready} Ko Khabar Jayegi</button>
-              <p className="detail-note">Request bhejne par number kisi ko nahi dikhta — donor khud "Me Araha Hon" bolay to rabta hota hai.</p>
-            </div>
+            {!counts ? (
+              <div className="detail">
+                <span className="detail-group">{group}</span>
+                <div className="skeleton" aria-hidden="true" />
+                <p className="detail-small">{'Asal numbers load ho rahe hain — server sota tha to pehli dafa 30–50 second lag sakte hain. Ye '}<b>0 donors nahi</b>{' hai, data abhi aya hi nahi.'}</p>
+                {countsLoading && <p className="detail-note">Load ho raha hai…</p>}
+              </div>
+            ) : (
+              <div className="detail" key={`${city}-${group}-${ready}`}>
+                <span className="detail-group">{group}</span>
+                <div className="detail-num"><CountUp value={ready} /></div>
+                <p className="detail-line"><b>{city}</b>{' me is group ke donors '}<b>abhi ready</b>{' hain'}</p>
+                <div className="ready-bar"><i style={{ width: `${registered ? Math.round((ready / registered) * 100) : 0}%` }} /></div>
+                <p className="detail-small">{registered}{' register donors me se '}{ready}{' ne 3 mahine wala rule poora kiya. Baqi ko system tang nahi karta — unki sehat pehle hai.'}</p>
+                <button className="btn btn-red btn-full" onClick={() => goRequest(group, city)}>Request Bhejo — {group} Group Ke Liye</button>
+                <p className="detail-note">Request bhejne par number kisi ko nahi dikhta — donor khud "Me Araha Hon" bolay to rabta hota hai.</p>
+              </div>
+            )}
           </Reveal>
         </div>
       </section>
+
+      {lastUpdated && <p className="last-updated" style={{ textAlign: 'center' }}>Board ka data last updated: {lastUpdated}</p>}
 
       <div className="manifesto" aria-hidden="true">
         <div className="manifesto-track">
@@ -290,7 +308,7 @@ function Home({ counts, requests, goRegister, goRequest, goRequests }) {
             </div>
             <div className="chips">
               {['All', ...CITIES].map((c) => (
-                <button key={c} className={`chip ${reqCity === c ? 'chip-on' : ''}`} onClick={() => setReqCity(c)}>
+                <button key={c} className={`chip ${reqCity === c ? 'chip-on' : ''}`} onClick={() => setReqCity(c)} aria-pressed={reqCity === c}>
                   {c === 'All' ? 'Sab' : c}
                 </button>
               ))}
@@ -316,9 +334,7 @@ function Home({ counts, requests, goRegister, goRequest, goRequests }) {
           <span className="kicker">KAHAANI HAR DONOR KI</span>
           <blockquote>"Tum apna khoon kisi ajnabi ko dete ho —<br />aur kisi maa ki dua tumhe zindagi bhar dhundti rehti hai."</blockquote>
           <p>
-            Pakistan me har roz hazaron log sirf is liye ruk jate hain ke waqt par donor nahi milta —
-            halanke donor unhi ki gali, unhi ke sheher me hota hai. Masla khoon ki kami nahi hai.
-            <b> Masla rabte ki kami hai.</b> Har Boond sirf wo rabta hai.
+            {'Pakistan me har roz hazaron log sirf is liye ruk jate hain ke waqt par donor nahi milta — halanke donor unhi ki gali, unhi ke sheher me hota hai. Masla khoon ki kami nahi hai. '}<b>Masla rabte ki kami hai.</b>{' Har Boond sirf wo rabta hai.'}
           </p>
           <div className="story-sign">— Har Boond ka wada: khoon kabhi bhi bikega nahi</div>
         </Reveal>
@@ -329,7 +345,7 @@ function Home({ counts, requests, goRegister, goRequest, goRequests }) {
         <div className="steps">
           {[
             ['01', 'Request Dalo', 'Blood group, sheher, hospital, kitna time hai. Aik minute se kam.'],
-            ['02', 'Board Khud Dhundega', 'Lifeline Board sirf unhi donors ko jagata hai jo match karte hain aur ready hain.'],
+            ['02', 'Board Khud Dhundega', 'Lifeline Board sirf wohi donors dikhata hai jo match karte hain aur ready hain.'],
             ['03', '"Me Araha Hon"', 'Donor ka aik tap — aur tumhe tasalli. Na 50 calls, na jhooti umeed.'],
           ].map(([n, t, p], i) => (
             <Reveal key={n} delay={i * 110}><div className="step"><div className="step-num">{n}</div><h3>{t}</h3><p>{p}</p></div></Reveal>
@@ -375,7 +391,7 @@ function Home({ counts, requests, goRegister, goRequest, goRequests }) {
       <Reveal>
         <section className="cta" id="join">
           <h2>TUMHARI BOOND KA<br /><span>KISI KO INTEZAR HAI</span></h2>
-          <p>Register karo. Jab tumhare sheher me zaroorat hogi, Lifeline Board tumhe jagayega.</p>
+          <p>Register karo — tum board par ready donors me gine jaoge, aur zaroorat par family tum tak pohanch sakegi.</p>
           <button className="btn btn-white btn-lg" onClick={goRegister}>Life Saver Bano — Register Karo</button>
         </section>
       </Reveal>
@@ -388,7 +404,7 @@ function GroupChips({ value, onChange }) {
   return (
     <div className="chips">
       {GROUPS.map((g) => (
-        <button type="button" key={g} className={`chip chip-g ${value === g ? 'chip-on' : ''}`} onClick={() => onChange(g)}>{g}</button>
+        <button type="button" key={g} className={`chip chip-g ${value === g ? 'chip-on' : ''}`} onClick={() => onChange(g)} aria-pressed={value === g}>{g}</button>
       ))}
     </div>
   )
@@ -397,7 +413,7 @@ function CityChips({ value, onChange }) {
   return (
     <div className="chips">
       {CITIES.map((c) => (
-        <button type="button" key={c} className={`chip ${value === c ? 'chip-on' : ''}`} onClick={() => onChange(c)}>{c}</button>
+        <button type="button" key={c} className={`chip ${value === c ? 'chip-on' : ''}`} onClick={() => onChange(c)} aria-pressed={value === c}>{c}</button>
       ))}
     </div>
   )
@@ -407,7 +423,7 @@ const phoneOk = (p) => /^03\d{9}$/.test(cleanPhone(p))
 
 /* ================= REGISTER ================= */
 function Register({ myDonors, addDonor, removeDonor, goBoard }) {
-  const [f, setF] = useState({ name: '', phone: '', group: 'O+', city: 'Hangu', lastType: 'never', lastDate: '', night: true, agree: false })
+  const [f, setF] = useState({ name: '', phone: '', group: 'O+', city: 'Hangu', lastType: 'never', lastDate: '', night: true, notify: false, agree: false })
   const [err, setErr] = useState({})
   const [done, setDone] = useState(null)
   const [sending, setSending] = useState(false)
@@ -433,6 +449,7 @@ function Register({ myDonors, addDonor, removeDonor, goBoard }) {
         group: f.group, city: f.city,
         lastDonation: f.lastType === 'date' ? new Date(f.lastDate).toISOString() : null,
         nightAvailable: f.night,
+        notifyConsent: f.notify,
       })
       setDone(saved)
       window.scrollTo({ top: 0 })
@@ -456,7 +473,7 @@ function Register({ myDonors, addDonor, removeDonor, goBoard }) {
             <div><span>Sheher</span><b>{done.city}</b></div>
             <div><span>Status</span><b className={ready ? 'ok-text' : 'warn-text'}>{ready ? 'Abhi Ready — board par ginay ja rahe ho' : 'Abhi Ready Nahi — 3 mahine poore hone par board khud ready dikhayega'}</b></div>
           </div>
-          <p className="form-note">Tumhara number kisi ko nazar nahi ayega. Jab tumhare group ki request ayegi aur tum "Me Araha Hon" bologe, sirf tab rabta hoga.</p>
+          <p className="form-note">Tumhara number kisi ko nazar nahi ayega. Jab tumhare group ki request ayegi aur tum "Me Araha Hon" bologe, sirf tab rabta hoga. Tumhari donor pehchan (token) isi phone me mehfooz save ho gayi hai — "Me Araha Hon" isi phone se hoga, is liye is phone ka browser data saaf na karna.</p>
           <div className="hero-ctas" style={{ justifyContent: 'center' }}>
             <button className="btn btn-red" onClick={goBoard}>Lifeline Board Par Dekho</button>
             <button className="btn btn-line" onClick={() => setDone(null)}>Aik Aur Donor Register Karo</button>
@@ -473,12 +490,12 @@ function Register({ myDonors, addDonor, removeDonor, goBoard }) {
       <p className="sec-sub">2 minute ka form hai. Tumhara number hamesha private rahega — ye hamara pehla rule hai.</p>
 
       <form className="form-card" onSubmit={submit} noValidate>
-        <label className="lbl2">Poora Naam</label>
-        <input className="input" value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Masalan: Ahmed Khan" />
+        <label className="lbl2" htmlFor="reg-name">Poora Naam</label>
+        <input className="input" id="reg-name" autoComplete="name" aria-invalid={!!err.name} value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Masalan: Ahmed Khan" />
         {err.name && <p className="err">{err.name}</p>}
 
-        <label className="lbl2">WhatsApp Number</label>
-        <input className="input" value={f.phone} onChange={(e) => set('phone', e.target.value)} placeholder="03XX-XXXXXXX" inputMode="tel" />
+        <label className="lbl2" htmlFor="reg-phone">WhatsApp Number</label>
+        <input className="input" id="reg-phone" autoComplete="tel" maxLength={13} aria-invalid={!!err.phone} value={f.phone} onChange={(e) => set('phone', e.target.value)} placeholder="03XX-XXXXXXX" inputMode="tel" />
         {err.phone && <p className="err">{err.phone}</p>}
 
         <label className="lbl2">Blood Group</label>
@@ -494,7 +511,7 @@ function Register({ myDonors, addDonor, removeDonor, goBoard }) {
         </div>
         {f.lastType === 'date' && (
           <>
-            <input type="date" className="input" style={{ marginTop: 12 }} value={f.lastDate} max={new Date().toISOString().slice(0, 10)} onChange={(e) => set('lastDate', e.target.value)} />
+            <input type="date" className="input" id="reg-date" aria-invalid={!!err.lastDate} style={{ marginTop: 12 }} value={f.lastDate} max={new Date().toISOString().slice(0, 10)} onChange={(e) => set('lastDate', e.target.value)} />
             {err.lastDate && <p className="err">{err.lastDate}</p>}
             <p className="form-note">Agar 3 mahine se kam hue hain to tum abhi "ready" nahi gine jaoge — system tumhari sehat ki hifazat ke liye khud intezar karega.</p>
           </>
@@ -503,6 +520,10 @@ function Register({ myDonors, addDonor, removeDonor, goBoard }) {
         <label className="check-row">
           <input type="checkbox" checked={f.night} onChange={(e) => set('night', e.target.checked)} />
           <span>Raat ko bhi emergency me mujhe khabar di ja sakti hai</span>
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={f.notify} onChange={(e) => set('notify', e.target.checked)} />
+          <span>Mujhe apne group aur sheher ki emergency requests ki khabar di jaye — abhi sirf ye ijazat record hoti hai, koi message nahi jata (notification service abhi on nahi hai)</span>
         </label>
         <label className="check-row">
           <input type="checkbox" checked={f.agree} onChange={(e) => set('agree', e.target.checked)} />
@@ -575,7 +596,7 @@ function NewRequest({ prefill, createRequest, goRequests }) {
             <div><span>Request Number</span><b>{doneId}</b></div>
             <div><span>Status</span><b className="warn-text">Donor Dhunda Ja Raha Hai</b></div>
           </div>
-          <p className="form-note">Is group ke ready donors ko khabar ja rahi hai. Jaise hi koi donor "Me Araha Hon" bolega, is request ka status "Donor Mil Gaya" ho jayega — Requests wale page par nazar rakho.</p>
+          <p className="form-note">Tumhari request Live Requests me lag gayi hai — ready donors wahan dekh kar "Me Araha Hon" bol sakenge. Jaise hi koi donor bolega, status "Donor Mil Gaya" ho jayega — Requests wale page par nazar rakho. Tasdeeq (confirm) sirf isi phone se hogi, is liye ye phone/browser sambhal kar rakhna.</p>
           <button className="btn btn-red" onClick={goRequests}>Meri Request Dekho</button>
         </div>
       </main>
@@ -589,12 +610,12 @@ function NewRequest({ prefill, createRequest, goRequests }) {
       <p className="sec-sub">Ye tafseel sirf is liye hai ke sahi donor sahi hospital tak pohanch sake. Mareez ka naam ya bemari kabhi nahi mangi jati.</p>
 
       <form className="form-card" onSubmit={submit} noValidate>
-        <label className="lbl2">Tumhara Naam (mareez ke sath kon hai)</label>
-        <input className="input" value={f.attendant} onChange={(e) => set('attendant', e.target.value)} placeholder="Masalan: Bilal Ahmed" />
+        <label className="lbl2" htmlFor="req-attendant">Tumhara Naam (mareez ke sath kon hai)</label>
+        <input className="input" id="req-attendant" autoComplete="name" aria-invalid={!!err.attendant} value={f.attendant} onChange={(e) => set('attendant', e.target.value)} placeholder="Masalan: Bilal Ahmed" />
         {err.attendant && <p className="err">{err.attendant}</p>}
 
-        <label className="lbl2">Tumhara Number (donor rabta karega)</label>
-        <input className="input" value={f.phone} onChange={(e) => set('phone', e.target.value)} placeholder="03XX-XXXXXXX" inputMode="tel" />
+        <label className="lbl2" htmlFor="req-phone">Tumhara Number (donor rabta karega)</label>
+        <input className="input" id="req-phone" autoComplete="tel" maxLength={13} aria-invalid={!!err.phone} value={f.phone} onChange={(e) => set('phone', e.target.value)} placeholder="03XX-XXXXXXX" inputMode="tel" />
         {err.phone && <p className="err">{err.phone}</p>}
 
         <label className="lbl2">Blood Group Jo Chahiye</label>
@@ -603,27 +624,27 @@ function NewRequest({ prefill, createRequest, goRequests }) {
         <label className="lbl2">Sheher</label>
         <CityChips value={f.city} onChange={setCity} />
 
-        <label className="lbl2">Hospital</label>
-        <select className="input" value={f.hospital} onChange={(e) => set('hospital', e.target.value)}>
+        <label className="lbl2" htmlFor="req-hospital">Hospital</label>
+        <select className="input" id="req-hospital" value={f.hospital} onChange={(e) => set('hospital', e.target.value)}>
           {HOSPITALS[f.city].map((h) => (<option key={h} value={h}>{h}</option>))}
         </select>
         {f.hospital === 'Koi Aur Hospital' && (
           <>
-            <input className="input" style={{ marginTop: 12 }} value={f.customHospital} onChange={(e) => set('customHospital', e.target.value)} placeholder="Hospital ka naam likho" />
+            <input className="input" id="req-custom-hospital" aria-invalid={!!err.customHospital} style={{ marginTop: 12 }} value={f.customHospital} onChange={(e) => set('customHospital', e.target.value)} placeholder="Hospital ka naam likho" />
             {err.customHospital && <p className="err">{err.customHospital}</p>}
           </>
         )}
 
         <div className="form-2col">
           <div>
-            <label className="lbl2">Kitni Bottles</label>
-            <select className="input" value={f.bottles} onChange={(e) => set('bottles', e.target.value)}>
+            <label className="lbl2" htmlFor="req-bottles">Kitni Bottles</label>
+            <select className="input" id="req-bottles" value={f.bottles} onChange={(e) => set('bottles', e.target.value)}>
               {[1, 2, 3, 4, 5, 6].map((n) => (<option key={n} value={n}>{n} bottle</option>))}
             </select>
           </div>
           <div>
-            <label className="lbl2">Kitne Time Ke Andar</label>
-            <select className="input" value={f.deadline} onChange={(e) => set('deadline', e.target.value)}>
+            <label className="lbl2" htmlFor="req-deadline">Kitne Time Ke Andar</label>
+            <select className="input" id="req-deadline" value={f.deadline} onChange={(e) => set('deadline', e.target.value)}>
               {[2, 4, 6, 8, 12, 24].map((n) => (<option key={n} value={n}>{n} ghante</option>))}
             </select>
           </div>
@@ -638,49 +659,70 @@ function NewRequest({ prefill, createRequest, goRequests }) {
 }
 
 /* ================= ALL REQUESTS + ACCEPT + CONFIRM ================= */
-function RequestsPage({ requests, myDonor, acceptRequest, confirmRequest }) {
+function RequestsPage({ requests, myDonors, myRequestTokens, acceptRequest, confirmRequest }) {
   const [cityF, setCityF] = useState('All')
   const [openId, setOpenId] = useState(null)
-  const [form, setForm] = useState({ name: '', phone: '' })
+  const [selDonor, setSelDonor] = useState({})
   const [codeIn, setCodeIn] = useState({})
   const [msg, setMsg] = useState({})
-  const list = [...requests].sort((a, b) => b.postedAt - a.postedAt)
+  const [busyId, setBusyId] = useState(null)
+  const list = [...requests].sort((x, y) => y.postedAt - x.postedAt)
     .filter((r) => cityF === 'All' || r.city === cityF)
+
+  // Donor is request ke liye eligible kyun nahi — wajah saaf alfaz me.
+  // (Server bhi yehi sab khud check karta hai; ye sirf user ki rehnumai hai.)
+  const donorProblem = (d, r) => {
+    if (!d.donorToken) return 'purana donor hai — is ke paas token nahi, admin se naya token lena hoga'
+    if (!donorIsReady(d)) return 'abhi ready nahi — 90 din wala rule poora nahi'
+    if (d.city !== r.city) return `sheher ${d.city} hai, request ${r.city} ki hai`
+    if (!canDonateTo(d.group, r.group)) return `${d.group} is ${r.group} request ke liye compatible nahi`
+    return null
+  }
+  const eligibleFor = (r) => myDonors.filter((d) => !donorProblem(d, r))
 
   const openAccept = (r) => {
     setOpenId(r.id)
-    setForm({ name: myDonor ? myDonor.name : '', phone: myDonor ? myDonor.phone : '' })
+    const elig = eligibleFor(r)
+    if (elig.length) setSelDonor((m) => ({ ...m, [r.id]: m[r.id] && elig.some((d) => d.id === m[r.id]) ? m[r.id] : elig[0].id }))
     setMsg((m) => ({ ...m, [r.id]: '' }))
   }
 
   const doAccept = async (r) => {
-    if (form.name.trim().length < 3) { setMsg((m) => ({ ...m, [r.id]: 'Apna naam likho' })); return }
-    if (!phoneOk(form.phone)) { setMsg((m) => ({ ...m, [r.id]: 'Sahi number likho — 03 se shuru, 11 number' })); return }
-    const res = await acceptRequest(r.id, form.name.trim(), cleanPhone(form.phone))
+    const elig = eligibleFor(r)
+    const donor = elig.find((d) => d.id === selDonor[r.id]) || elig[0]
+    if (!donor || busyId) return
+    setBusyId(r.id)
+    const res = await acceptRequest(r.id, donor)
+    setBusyId(null)
     if (!res.ok) { setMsg((m) => ({ ...m, [r.id]: res.error })); return }
     setOpenId(null)
   }
 
   const doConfirm = async (r) => {
-    const ok = await confirmRequest(r.id, (codeIn[r.id] || '').trim())
-    setMsg((m) => ({ ...m, [r.id]: ok ? '' : 'Code ghalat hai — donor se dobara pooch kar likho' }))
-    if (ok) setCodeIn((c) => ({ ...c, [r.id]: '' }))
+    if (busyId) return
+    setBusyId(r.id)
+    const res = await confirmRequest(r.id, (codeIn[r.id] || '').trim())
+    setBusyId(null)
+    setMsg((m) => ({ ...m, [r.id]: res.ok ? '' : res.error }))
+    if (res.ok) setCodeIn((c) => ({ ...c, [r.id]: '' }))
   }
 
   return (
     <main className="page-wrap wide">
       <span className="kicker">LIVE REQUESTS</span>
       <h2 className="sec-title">Saari <span>Requests</span></h2>
-      <p className="sec-sub">Donor ho? Kisi request par "Me Araha Hon" bolo. Family ho? Khoon mil jane par donor ke diye hue code se tasdeeq karo — isi se record sachha rehta hai.</p>
+      <p className="sec-sub">Donor ho? Kisi request par "Me Araha Hon" bolo — ye sirf is phone par register hue donor se hoga. Family ho? Khoon mil jane par donor ke diye hue code se tasdeeq karo — isi se record sachha rehta hai.</p>
 
       <div className="chips" style={{ margin: '20px 0 24px' }}>
         {['All', ...CITIES].map((c) => (
-          <button key={c} className={`chip ${cityF === c ? 'chip-on' : ''}`} onClick={() => setCityF(c)}>{c === 'All' ? 'Sab Sheher' : c}</button>
+          <button key={c} className={`chip ${cityF === c ? 'chip-on' : ''}`} onClick={() => setCityF(c)} aria-pressed={cityF === c}>{c === 'All' ? 'Sab Sheher' : c}</button>
         ))}
       </div>
 
       <div className="requests">
-        {list.map((r) => (
+        {list.map((r) => {
+          const elig = r.status === 'searching' ? eligibleFor(r) : []
+          return (
           <article key={r.id} className="req-card">
             <div className="req-top">
               <span className="req-group">{r.group}</span>
@@ -690,6 +732,9 @@ function RequestsPage({ requests, myDonor, acceptRequest, confirmRequest }) {
             <p>{r.city} • {r.bottles} bottle chahiye • {r.deadlineHrs} ghante ke andar</p>
             {r.attendant && <p className="req-donor">Rabta: <b>{r.attendant}</b></p>}
             {r.status === 'donor-found' && r.donorName && <p className="req-donor">Donor: <b>{r.donorName}</b> araha hai</p>}
+            {(r.status === 'searching' || r.status === 'donor-found') && (
+              <p className="req-expiry">⏳ {timeLeftFrom(r.expiresAt || (r.postedAt + r.deadlineHrs * 3600000))}</p>
+            )}
             <div className="req-foot"><span>{timeAgoFrom(r.postedAt)}</span><span className="req-id">{r.id}</span></div>
 
             {r.status === 'searching' && openId !== r.id && (
@@ -697,13 +742,34 @@ function RequestsPage({ requests, myDonor, acceptRequest, confirmRequest }) {
             )}
             {r.status === 'searching' && openId === r.id && (
               <div className="accept-box">
-                <label className="lbl2">Tumhara Naam</label>
-                <input className="input" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Donor ka naam" />
-                <label className="lbl2">Tumhara Number</label>
-                <input className="input" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="03XX-XXXXXXX" inputMode="tel" />
-                {msg[r.id] && <p className="err">{msg[r.id]}</p>}
-                <button className="btn btn-red btn-full" style={{ marginTop: 12 }} onClick={() => doAccept(r)}>Confirm — Me Araha Hon</button>
-                <p className="form-note">Confirm karte hi tumhe aik <b>4 number ka code</b> milega. Khoon dene ke baad ye code family ko dena — wo isi se tasdeeq karegi.</p>
+                {myDonors.length === 0 && (
+                  <p className="err">Pehle donor register karo — baghair registration ke jawab nahi diya ja sakta. Upar "Donor Bano" se register karke wapas ao.</p>
+                )}
+                {myDonors.length > 0 && elig.length === 0 && (
+                  <>
+                    <p className="err">Is phone ka koi donor is request ke liye eligible nahi hai:</p>
+                    <ul className="elig-list">
+                      {myDonors.map((d) => (
+                        <li key={d.id}><b>{d.name}</b> ({d.group}, {d.city}) — {donorProblem(d, r)}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {elig.length > 0 && (
+                  <>
+                    <span className="lbl2">Kon Sa Donor Ja Raha Hai</span>
+                    <div className="chips">
+                      {elig.map((d) => (
+                        <button type="button" key={d.id} className={`chip ${selDonor[r.id] === d.id ? 'chip-on' : ''}`} aria-pressed={selDonor[r.id] === d.id} onClick={() => setSelDonor((m) => ({ ...m, [r.id]: d.id }))}>
+                          {d.name} — {d.group}, {d.city}
+                        </button>
+                      ))}
+                    </div>
+                    {msg[r.id] && <p className="err">{msg[r.id]}</p>}
+                    <button className="btn btn-red btn-full" style={{ marginTop: 12 }} disabled={busyId === r.id} onClick={() => doAccept(r)}>{busyId === r.id ? 'Ho Raha Hai…' : 'Confirm — Me Araha Hon'}</button>
+                    <p className="form-note">Confirm karte hi tumhe aik <b>4 number ka code</b> milega. Khoon dene ke baad ye code family ko dena — wo isi se tasdeeq karegi.</p>
+                  </>
+                )}
               </div>
             )}
             {r.status === 'donor-found' && r.code && (
@@ -711,18 +777,21 @@ function RequestsPage({ requests, myDonor, acceptRequest, confirmRequest }) {
             )}
             {r.status === 'donor-found' && (
               <div className="accept-box">
-                <label className="lbl2">Family Ke Liye — Khoon Mil Gaya? Code Likho</label>
+                <label className="lbl2" htmlFor={`code-${r.id}`}>Family Ke Liye — Khoon Mil Gaya? Code Likho</label>
                 <div className="code-row">
-                  <input className="input code-input" value={codeIn[r.id] || ''} onChange={(e) => setCodeIn((c) => ({ ...c, [r.id]: e.target.value }))} placeholder="4 number ka code" inputMode="numeric" maxLength={4} />
-                  <button className="btn btn-red" onClick={() => doConfirm(r)}>Tasdeeq Karo</button>
+                  <input className="input code-input" id={`code-${r.id}`} value={codeIn[r.id] || ''} onChange={(e) => setCodeIn((c) => ({ ...c, [r.id]: e.target.value }))} placeholder="4 number ka code" inputMode="numeric" maxLength={4} />
+                  <button className="btn btn-red" disabled={busyId === r.id} onClick={() => doConfirm(r)}>{busyId === r.id ? 'Ho Raha Hai…' : 'Tasdeeq Karo'}</button>
                 </div>
+                {!myRequestTokens[r.id] && <p className="form-note">Note: tasdeeq aam tor par sirf usi phone se hoti hai jis se ye request lagi thi.</p>}
                 {msg[r.id] && <p className="err">{msg[r.id]}</p>}
               </div>
             )}
             {r.status === 'completed' && <p className="done-note">Alhamdulillah — ye request poori ho chuki hai. Donor ka shukriya.</p>}
+            {r.status === 'expired' && <p className="form-note">Is request ka waqt khatam ho gaya tha — agar ab bhi khoon chahiye to nayi request lagao.</p>}
             <div className="req-line" />
           </article>
-        ))}
+          )
+        })}
       </div>
       {list.length === 0 && <p className="form-note">Is sheher me abhi koi request nahi hai.</p>}
     </main>
@@ -731,6 +800,7 @@ function RequestsPage({ requests, myDonor, acceptRequest, confirmRequest }) {
 
 /* ================= Admin ================= */
 const REQ_STATUS = {
+  expired: { label: 'Expire ho gayi', cls: 'adm-pill-wait' },
   searching: { label: 'Dhoondh raha hai', cls: 'adm-pill-wait' },
   'donor-found': { label: 'Donor mil gaya', cls: 'adm-pill-mid' },
   completed: { label: 'Mukammal', cls: 'adm-pill-done' },
@@ -744,10 +814,15 @@ function AdminPage() {
   const [overview, setOverview] = useState(null)
   const [donors, setDonors] = useState([])
   const [reqs, setReqs] = useState([])
+  const [audit, setAudit] = useState([])
+  const [tokenBox, setTokenBox] = useState(null)
 
   const load = async () => {
-    const [ov, dn, rq] = await Promise.all([adminOverview(), adminDonors(), adminRequests()])
-    setOverview(ov); setDonors(dn); setReqs(rq); setAuthed(true)
+    const [ov, dn, rq, au] = await Promise.all([
+      adminOverview(), adminDonors(), adminRequests(),
+      adminAudit().catch(() => []),
+    ])
+    setOverview(ov); setDonors(dn); setReqs(rq); setAudit(au); setAuthed(true)
   }
 
   useEffect(() => {
@@ -809,6 +884,15 @@ function AdminPage() {
         <div className="adm-stat"><b>{ov.donors.kohat ?? 0}</b><span>Kohat Donors</span></div>
       </div>
 
+      {tokenBox && (
+        <div className="code-show" style={{ marginTop: 18 }}>
+          <b>{tokenBox.name}</b> ka naya donor token — sirf aik dafa dikh raha hai:
+          <span style={{ wordBreak: 'break-all', fontSize: 14, color: '#fff' }}>{tokenBox.token}</span>
+          <span>Ye token donor ko WhatsApp par bhej do aur kehna ke wo mujh se rabta karke apne phone me ye token lagwaye. Page refresh karne par ye dobara nahi dikhega.</span>
+          <button className="adm-btn" style={{ marginTop: 8 }} onClick={() => setTokenBox(null)}>Band Karo</button>
+        </div>
+      )}
+
       <h3 className="adm-h">Donors ({donors.length})</h3>
       <div className="adm-tablewrap">
         <table className="adm-table">
@@ -825,6 +909,7 @@ function AdminPage() {
                 <td className="adm-actions">
                   <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchDonor(d._id, { verified: !d.verified }))}>{d.verified ? 'Unverify' : 'Verify'}</button>
                   <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchDonor(d._id, { banned: !d.banned }))}>{d.banned ? 'Unban' : 'Ban'}</button>
+                  <button className="adm-btn" disabled={busy} onClick={() => act(async () => { const r2 = await adminReissueToken(d._id); setTokenBox({ name: d.name, token: r2.donorToken }) })}>Token Do</button>
                   <button className="adm-btn adm-btn-danger" disabled={busy} onClick={() => { if (window.confirm(`${d.name} ka record hamesha ke liye delete kar dun?`)) act(() => adminDeleteDonor(d._id)) }}>Delete</button>
                 </td>
               </tr>
@@ -849,12 +934,25 @@ function AdminPage() {
                 <td>{r.donorName ? <>{r.donorName}<br /><span className="adm-dim">{r.donorPhone}</span></> : <span className="adm-dim">—</span>}</td>
                 <td className="adm-actions">
                   {r.status !== 'searching' && <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchRequest(r._id, { status: 'searching' }))}>Azad Karo</button>}
-                  {r.status !== 'completed' && <button className="adm-btn" disabled={busy} onClick={() => act(() => adminPatchRequest(r._id, { status: 'completed' }))}>Complete</button>}
+                  {r.status !== 'completed' && <button className="adm-btn" disabled={busy} onClick={() => { if (window.confirm(`${r.reqId} ko complete kar dun? Donor ka record bhi update hoga (donations +1, last donation aaj).`)) act(() => adminPatchRequest(r._id, { status: 'completed' })) }}>Complete</button>}
                   <button className="adm-btn adm-btn-danger" disabled={busy} onClick={() => { if (window.confirm(`${r.reqId} request hamesha ke liye delete kar dun?`)) act(() => adminDeleteRequest(r._id)) }}>Delete</button>
                 </td>
               </tr>
             ))}
             {!reqs.length && <tr><td colSpan="7" className="adm-empty">Abhi koi request nahi ai.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 className="adm-h">Audit Log (aakhri {audit.length})</h3>
+      <div className="adm-tablewrap">
+        <table className="adm-table">
+          <thead><tr><th>Waqt</th><th>Action</th><th>Entity</th></tr></thead>
+          <tbody>
+            {audit.map((a) => (
+              <tr key={a._id}><td>{a.createdAt ? new Date(a.createdAt).toLocaleString() : ''}</td><td>{a.action}</td><td>{a.entity}</td></tr>
+            ))}
+            {!audit.length && <tr><td colSpan="3" className="adm-empty">Abhi koi admin action record nahi hua.</td></tr>}
           </tbody>
         </table>
       </div>
@@ -879,21 +977,26 @@ export default function App() {
   const [gone, setGone] = useState(false)
   const [route, setRoute] = useState(parseRoute)
   const [counts, setCounts] = useState(null)
+  const [countsLoading, setCountsLoading] = useState(true)
+  const [lastUpdated, setLastUpdated] = useState('')
   const [requests, setRequests] = useState([])
   const [device, setDevice] = useState(loadDevice)
   const [apiDown, setApiDown] = useState(false)
   const [prefill, setPrefill] = useState({ group: 'O+', city: 'Hangu' })
 
   const refresh = async () => {
+    setCountsLoading(true)
     try {
       const [c, r] = await Promise.all([fetchCounts(), fetchRequests()])
       setCounts(c); setRequests(r); setApiDown(false)
+      setLastUpdated(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))
     } catch { setApiDown(true) }
+    setCountsLoading(false)
   }
 
   useEffect(() => {
-    const a = setTimeout(() => setLoading(false), 2500)
-    const b = setTimeout(() => setGone(true), 3150)
+    const a = setTimeout(() => setLoading(false), 1400)
+    const b = setTimeout(() => setGone(true), 1900)
     refresh()
     return () => { clearTimeout(a); clearTimeout(b) }
   }, [])
@@ -919,7 +1022,7 @@ export default function App() {
 
   const addDonor = async (payload) => {
     const res = await registerDonor(payload)
-    const saved = { ...payload, id: res.id, ready: res.ready, donations: 0 }
+    const saved = { ...payload, id: res.id, donorToken: res.donorToken || null, ready: res.ready, donations: 0 }
     setDevice((s) => ({ ...s, myDonors: [saved, ...s.myDonors] }))
     refresh()
     return saved
@@ -929,13 +1032,16 @@ export default function App() {
 
   const createRequest = async (data) => {
     const res = await createBloodRequest(data)
+    if (res.requestToken) {
+      setDevice((st) => ({ ...st, myRequests: { ...st.myRequests, [res.reqId]: { token: res.requestToken, at: Date.now() } } }))
+    }
     await refresh()
     return res.reqId
   }
 
-  const acceptRequest = async (id, name, phone) => {
+  const acceptRequest = async (id, donor) => {
     try {
-      const res = await acceptBloodRequest(id, { name, phone })
+      const res = await acceptBloodRequest(id, { donorId: donor.id, donorToken: donor.donorToken })
       setDevice((s) => ({
         ...s,
         myAccepts: { ...s.myAccepts, [id]: { code: res.code, attendantPhone: res.attendantPhone } },
@@ -948,12 +1054,16 @@ export default function App() {
   }
 
   const confirmRequest = async (id, code) => {
+    const tok = device.myRequests[id]?.token || null
     try {
-      await confirmBloodRequest(id, code)
+      await confirmBloodRequest(id, { code, requestToken: tok })
       await refresh()
-      return true
-    } catch {
-      return false
+      return { ok: true }
+    } catch (e) {
+      let msg = e.message || 'Server se rabta nahi ho raha — dobara try karo'
+      if (e.status === 401) msg = 'Tasdeeq sirf usi phone se hogi jis se ye request lagi thi — usi phone se code likho'
+      else if (typeof e.attemptsLeft === 'number') msg = `${e.message} — ${e.attemptsLeft} koshish baqi`
+      return { ok: false, error: msg }
     }
   }
 
@@ -981,12 +1091,17 @@ export default function App() {
       </header>
 
       {apiDown && (
-        <div className="api-down">Server se rabta nahi ho raha — numbers aur requests abhi load nahi ho sakay. Thodi dair baad page refresh karo.</div>
+        <div className="api-down">
+          Server se rabta nahi ho raha — numbers aur requests abhi load nahi ho sakay (ye 0 nahi hai, data aya hi nahi).
+          <button className="retry-btn" onClick={() => refresh()}>Dobara Try Karo</button>
+        </div>
       )}
 
       {route === 'home' && (
         <Home
           counts={counts}
+          countsLoading={countsLoading}
+          lastUpdated={lastUpdated}
           requests={[...displayRequests].sort((a, b) => b.postedAt - a.postedAt)}
           goRegister={() => go('register')}
           goRequest={(g, c) => { setPrefill({ group: g, city: c }); go('request') }}
@@ -1000,7 +1115,7 @@ export default function App() {
         <NewRequest prefill={prefill} createRequest={createRequest} goRequests={() => go('requests')} />
       )}
       {route === 'requests' && (
-        <RequestsPage requests={displayRequests} myDonor={device.myDonors[0] || null} acceptRequest={acceptRequest} confirmRequest={confirmRequest} />
+        <RequestsPage requests={displayRequests} myDonors={device.myDonors} myRequestTokens={device.myRequests} acceptRequest={acceptRequest} confirmRequest={confirmRequest} />
       )}
       {route === 'admin' && <AdminPage />}
 

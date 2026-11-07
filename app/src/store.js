@@ -1,18 +1,26 @@
-// Har Boond — device-local cheezein
+// Har Boond — device-local cheezein (v2)
 // Asal data (donors, requests, counts) backend se ata hai (api.js).
 // Yahan sirf is device ki apni cheezein save hoti hain:
-//  - myDonors: is device se register hue donors (naam/number sirf apne liye)
+//  - myDonors: is device se register hue donors — in me donorToken bhi hai
+//    (token server dobara nahi deta; accept sirf isi token se hota hai)
 //  - myAccepts: jin requests par is device se "Me Araha Hon" bola — unke code
-//    (code server dobara nahi deta, is liye donor ke apne phone par mehfooz rakha jata hai)
+//  - myRequests: is device se lagi hui requests ke owner tokens
+//    (tasdeeq/confirm sirf request lagane wale ki device se hoti hai)
 const KEY = 'harboond_device_v1'
 const DAY = 24 * 60 * 60 * 1000
 
 export function loadDevice() {
   try {
     const s = JSON.parse(localStorage.getItem(KEY))
-    if (s && Array.isArray(s.myDonors) && s.myAccepts) return s
+    if (s && Array.isArray(s.myDonors)) {
+      return {
+        myDonors: s.myDonors,
+        myAccepts: s.myAccepts && typeof s.myAccepts === 'object' ? s.myAccepts : {},
+        myRequests: s.myRequests && typeof s.myRequests === 'object' ? s.myRequests : {},
+      }
+    }
   } catch { /* ignore */ }
-  return { myDonors: [], myAccepts: {} }
+  return { myDonors: [], myAccepts: {}, myRequests: {} }
 }
 
 export function saveDevice(s) {
@@ -32,4 +40,15 @@ export function timeAgoFrom(ts) {
   const h = Math.floor(mins / 60)
   if (h < 24) return `${h} ghante pehle`
   return `${Math.floor(h / 24)} din pehle`
+}
+
+export function timeLeftFrom(ts) {
+  const ms = ts - Date.now()
+  if (!Number.isFinite(ms)) return ''
+  if (ms <= 0) return 'Waqt khatam ho gaya'
+  const mins = Math.round(ms / 60000)
+  if (mins < 60) return `${Math.max(1, mins)} minute baqi`
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return m ? `${h} ghante ${m} minute baqi` : `${h} ghante baqi`
 }
